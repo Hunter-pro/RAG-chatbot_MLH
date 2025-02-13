@@ -17,9 +17,15 @@ else:
 
 prompt = st.text_input("Type in your prompt")
 if st.button("Get query embeddings and answer"):
-    query_embeddings = get_query_embeddings(query=prompt)
-    answers = query_pinecone_index(query_embeddings=query_embeddings)
-    response = generate_answer(answers, prompt)
-    st.success("Answers fetched successfully!")
+    if not prompt:
+        st.warning("Please enter a question first")
+    else:
+        query_embeddings = get_query_embeddings(query=prompt)
+        answers = query_pinecone_index(query_embeddings=query_embeddings)
+        if answers and len(answers.get('matches', [])) > 0:
+            response = generate_answer(answers, prompt)
+            st.success("Answers fetched successfully!")
+        else:
+            st.warning("No relevant information found. Try a different question.")
 else:
     st.warning("Please click on the button to get your answer embeddings")

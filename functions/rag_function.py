@@ -1,5 +1,8 @@
 from langchain_community.document_loaders.pdf import PyPDFDirectoryLoader
 import streamlit as st
+import os
+from sentence_transformers import SentenceTransformer
+from pinecone import Pinecone, ServerlessSpec
 
 def read_doc(directory: str) -> list[str]:
     # Initialize a PyPDFDirectoryLoader object with the given directory
@@ -42,16 +45,16 @@ def chunk_text_for_list(docs: list[str], max_chunk_size: int = 1000) -> list[lis
     # Apply the chunk_text function to each document in the list
     return [chunk_text(doc, max_chunk_size) for doc in docs]
 
-
-from langchain.embeddings.openai import OpenAIEmbeddings
-# You can use my API key
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-EMBEDDINGS = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+# Replace OpenAI embeddings with sentence-transformers
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 def generate_embeddings(documents: list[any]) -> list[list[float]]:
-    embedded = [EMBEDDINGS.embed_documents(doc) for doc in documents]
-    return embedded
-
+    # Flatten the nested list if present
+    flattened_docs = [item for sublist in documents for item in (sublist if isinstance(sublist, list) else [sublist])]
+    # Generate embeddings
+    embeddings = model.encode(flattened_docs)
+    # Return as list of lists
+    return [[emb.tolist()] for emb in embeddings]
 
 import hashlib
 
@@ -87,12 +90,28 @@ def combine_vector_and_text(
     return data_with_metadata
 
 
-from pinecone import Pinecone
-# Obtain your own pinecone key
-PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
+try:
+    PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
+except:
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+    if not PINECONE_API_KEY:
+        st.error("Pinecone API key not found. Please set it in .streamlit/secrets.toml or as an environment variable.")
+
 pc = Pinecone(api_key=PINECONE_API_KEY)
-# Place the own index we created earlier
-index = pc.Index("ghw-rag-aiml")
+
+# Check if index exists, if not create it
+if "mlh-rag-chatbot" not in pc.list_indexes().names():
+    pc.create_index(
+        name="mlh-rag-chatbot",
+        dimension=384,  # all-MiniLM-L6-v2 dimension
+        metric="cosine",
+        spec=ServerlessSpec(
+            cloud="aws",
+            region="us-east-1"
+        )
+    )
+
+index = pc.Index("mlh-rag-chatbot")
 
 def upsert_data_to_pinecone(data_with_metadata: list[dict[str, any]]) -> None:
     index.upsert(vectors=data_with_metadata)
@@ -101,8 +120,9 @@ def upsert_data_to_pinecone(data_with_metadata: list[dict[str, any]]) -> None:
 #upsert_data_to_pinecone(data_with_metadata= data_with_meta_data)
 
 def get_query_embeddings(query: str) -> list[float]:
-    query_embeddings = EMBEDDINGS.embed_query(query)
-    return query_embeddings
+    # Generate embeddings for the query
+    query_embedding = model.encode([query])[0]
+    return query_embedding.tolist()
 
 # Call the function
 
@@ -117,15 +137,23 @@ def query_pinecone_index(
 # Call the function
 
 from openai import OpenAI
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 def generate_answer(answers: dict[str, any], prompt) -> str:
-    client = OpenAI(
-        base_url="http://localhost:1234/v1",
-        api_key="not-needed"
-    )
-    text_content = answers['matches'][0]['metadata']['text']
+    # Check if we have any matches
+    if not answers or not answers.get('matches') or len(answers['matches']) == 0:
+        st.warning("No relevant information found in the context. Please try a different question.")
+        return "No relevant information found in the context. Please try a different question."
 
     try:
+        client = OpenAI(
+            base_url="http://localhost:1234/v1",
+            api_key="not-needed"
+        )
+        text_content = answers['matches'][0]['metadata']['text']
+
+        # Create a placeholder for streaming output
+        message_placeholder = st.empty()
+        full_response = ""
+
         completion = client.chat.completions.create(
             model="local-model",
             messages=[
@@ -142,19 +170,20 @@ Instructions:
 
 Answer:"""}
             ],
-            temperature=0.3,  # Lower temperature for more focused responses
-            max_tokens=512,   # Adjust based on your needs
+            temperature=0.3,
+            max_tokens=512,
             stream=True
         )
         
-        response_text = ""
+        # Stream the response with better formatting
         for chunk in completion:
             if chunk.choices[0].delta.content:
                 content = chunk.choices[0].delta.content
-                response_text += content
-                st.write(content, end="")
+                full_response += content
+                # Update the placeholder with the accumulated response
+                message_placeholder.markdown(full_response)
         
-        return response_text
+        return full_response
     except Exception as e:
-        st.error(f"Error connecting to LM Studio: {str(e)}")
-        return "Sorry, there was an error connecting to the AI model. Please ensure LM Studio is running."
+        st.error(f"Error: {str(e)}")
+        return "Sorry, there was an error. Please ensure LM Studio is running and try again."
