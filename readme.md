@@ -22,8 +22,8 @@ A Streamlit-based chat interface that works with LM Studio for local AI interact
 
 1. Clone this repository:
    ```bash
-   git clone <repository-url>
-   cd <repository-name>
+   git clone https://github.com/Hunter-pro/RAG-chatbot_MLH.git
+   cd RAG-chatbot_MLH
    ```
 
 2. Install the required dependencies:
